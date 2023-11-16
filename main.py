@@ -1,4 +1,6 @@
 import argparse
+import numpy as np
+import math
 import pandas as pd
 
 
@@ -39,15 +41,15 @@ def get_args():
     return args
 
 
-def eval(
-    system_results_file,
-    query_relevance_file,
-    eval_output_file,
-    precision_cutoff=10,
-    recall_cutoff=50,
-):
+def eval(system_results_file, query_relevance_file, eval_output_file, verbose=False):
     system_results = pd.read_csv(system_results_file)
     qrels = pd.read_csv(query_relevance_file)
+
+    precision_cutoff = 10
+    recall_cutoff = 50
+    nDCG_10 = 10
+    nDCG_20 = 20
+    nDCG_cutoff = max(nDCG_10, nDCG_20)
 
     final_values = []
 
@@ -99,7 +101,67 @@ def eval(
                 else 0
             )
 
-            # Append precision, recall, and R-precision values to the list
+            # Calculate Average Precision
+            precision_at_relevant = 0
+            num_relevant_docs = len(relevant_docs)
+            num_retrieved_docs = 0
+            for i, doc in enumerate(total_retrieved):
+                if doc in relevant_docs:
+                    num_retrieved_docs += 1
+                    precision_at_relevant += num_retrieved_docs / (i + 1)
+
+            average_precision = (
+                (precision_at_relevant / num_relevant_docs)
+                if num_relevant_docs > 0
+                else 0
+            )
+
+            # Calculate nDCG
+            relevance_scores = (
+                qrels[qrels["query_id"] == query_id]
+                .set_index("doc_id")["relevance"]
+                .to_dict()
+            )
+
+            ndcg_docs = total_retrieved[:nDCG_cutoff]
+
+            g = []
+            for doc in ndcg_docs:
+                if doc in relevant_docs:
+                    g.append(relevance_scores[doc])
+                else:
+                    g.append(0)
+
+            dg = []
+            for i, score in enumerate(g):
+                if i == 0:
+                    dg.append(score)
+                elif score == 0:
+                    dg.append(0)
+                else:
+                    dg.append(score / math.log2(i + 1))
+
+            dcg = [dg[0]]
+            for i in range(1, len(dg)):
+                dcg.append(dcg[i - 1] + dg[i])
+
+            ig = sorted(g, reverse=True)
+            idg = []
+            for i, score in enumerate(ig):
+                if i == 0:
+                    idg.append(score)
+                elif score == 0:
+                    idg.append(0)
+                else:
+                    idg.append(score / math.log2(i + 1))
+
+            idcg = [idg[0]]
+            for i in range(1, len(idg)):
+                idcg.append(idcg[i - 1] + idg[i])
+
+            ndcg = [dcg[i] / idcg[i] if idcg[i] != 0 else 0 for i in range(nDCG_cutoff)]
+
+            # Append precision, recall, R-precision, AP, nDCG at 10, and nDCG at 20 values to the list
             final_values.append(
                 {
                     "system_number": system_id,
@@ -107,6 +169,9 @@ def eval(
                     "P@10": precision,
                     "R@50": recall,
                     "r-precision": r_precision,
+                    "AP": average_precision,
+                    "nDCG@10": ndcg[nDCG_10 - 1],
+                    "nDCG@20": ndcg[nDCG_20 - 1],
                 }
             )
 
@@ -117,15 +182,20 @@ def eval(
             "P@10": pd.DataFrame(final_values)["P@10"].mean(),
             "R@50": pd.DataFrame(final_values)["R@50"].mean(),
             "r-precision": pd.DataFrame(final_values)["r-precision"].mean(),
+            "AP": pd.DataFrame(final_values)["AP"].mean(),
+            "nDCG@10": pd.DataFrame(final_values)["nDCG@10"].mean(),
+            "nDCG@20": pd.DataFrame(final_values)["nDCG@20"].mean(),
         }
 
         final_values.append(mean_values)
 
-    # Create a DataFrame from the precision, recall, and R-precision values
+    # Create a DataFrame from the precision, recall, R-precision, AP, nDCG at 10, and nDCG at 20 values
     final_values_df = pd.DataFrame(final_values)
     final_values_df = final_values_df.round(3)
-    pd.set_option("display.max_rows", None)
-    print(final_values_df)
+    final_values_df.to_csv(eval_output_file, index=False)
+    if verbose:
+        pd.set_option("display.max_rows", None)
+        print(final_values_df)
 
 
 if __name__ == "__main__":
