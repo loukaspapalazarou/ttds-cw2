@@ -1,7 +1,22 @@
 import argparse
-import numpy as np
 import math
 import pandas as pd
+import re
+from nltk.stem import PorterStemmer
+import numpy as np
+from math import log2
+import gc
+import csv
+
+STOPWORDS_FILENAME = "ttds_2023_english_stop_words.txt"
+STEMMER = PorterStemmer()
+
+STOPPING_ENABLED = True
+STOPWORDS = []
+
+if STOPPING_ENABLED:
+    with open(file=STOPWORDS_FILENAME, mode="r") as stopwords_file:
+        STOPWORDS = set(stopwords_file.read().splitlines())
 
 
 def get_args():
@@ -34,6 +49,30 @@ def get_args():
         nargs="?",
         type=str,
         default="ir_eval.csv",
+        help="The output file name of the eval module",
+    )
+
+    parser.add_argument(
+        "--text_analysis_file",
+        nargs="?",
+        type=str,
+        default="train_and_dev.tsv",
+        help="The output file name of the eval module",
+    )
+
+    parser.add_argument(
+        "--mutual_information_output_file",
+        nargs="?",
+        type=str,
+        default="mutual_information_output.csv",
+        help="The output file name of the eval module",
+    )
+
+    parser.add_argument(
+        "--text_classification_file",
+        nargs="?",
+        type=str,
+        default="train.txt",
         help="The output file name of the eval module",
     )
 
@@ -198,6 +237,137 @@ def eval(system_results_file, query_relevance_file, eval_output_file, verbose=Fa
         print(final_values_df)
 
 
+def text_to_terms(text):
+    return [
+        STEMMER.stem(word)
+        for word in re.split(r"[^a-zA-Z0-9]+", text.lower())
+        if word and word not in STOPWORDS
+    ]
+
+
+def calc_mutual_information(N_values):
+    N11 = N_values[0]
+    N10 = N_values[1]
+    N01 = N_values[2]
+    N00 = N_values[3]
+    N = sum(N_values)
+    N1_dot = N10 + N11
+    dot_N1 = N01 + N11
+    N0_dot = N00 + N01
+    dot_N0 = N00 + N10
+
+    try:
+        t1 = (N11 / N) * log2((N * N11) / (N1_dot * dot_N1))
+    except Exception:
+        t1 = 0
+    try:
+        t2 = (N01 / N) * log2((N * N01) / (N0_dot * dot_N1))
+    except Exception:
+        t2 = 0
+    try:
+        t3 = (N10 / N) * log2((N * N10) / (N1_dot * dot_N0))
+    except Exception:
+        t3 = 0
+    try:
+        t4 = (N00 / N) * log2((N * N00) / (N0_dot * dot_N0))
+    except:
+        t4 = 0
+
+    return t1 + t2 + t3 + t4
+
+
+def calc_chi_squred(N_values):
+    N11 = N_values[0]
+    N10 = N_values[1]
+    N01 = N_values[2]
+    N00 = N_values[3]
+
+
+def analyze(text_analysis_file, mutual_information_output_file):
+    corpora = pd.DataFrame(columns=["class", "terms"])
+    with open(text_analysis_file, "r") as f:
+        lines = f.readlines()
+    for line in lines:
+        line = line.split("\t")
+        df_to_concat = pd.DataFrame(
+            {"class": [line[0]], "terms": [text_to_terms(line[1])]}
+        )
+        corpora = pd.concat([corpora, df_to_concat], ignore_index=True)
+
+    # Calculate Mutual Information
+    top_k = 10
+    term_map = {}
+    for i, i_row in corpora.iterrows():
+        print(f"Processing rows {i+1}/{len(corpora)}")
+        # Accessing the values in each row
+        i_class = i_row["class"]
+        for term in i_row["terms"]:
+            N00, N01, N10, N11 = 0, 0, 0, 0
+            for _, j_row in corpora.iterrows():
+                if i_class == j_row["class"] and term in j_row["terms"]:
+                    N11 += 1
+                elif i_class != j_row["class"] and term in j_row["terms"]:
+                    N10 += 1
+                elif i_class == j_row["class"] and term not in j_row["terms"]:
+                    N01 += 1
+                else:
+                    N00 += 1
+            current_value = term_map.get((i_class, term), (0, 0, 0, 0))
+            updated_value = (
+                max(N11, current_value[0]),
+                max(N10, current_value[1]),
+                max(N01, current_value[2]),
+                max(N00, current_value[3]),
+            )
+            term_map[(i_class, term)] = updated_value
+
+    mutual_information = {}
+    for key in term_map:
+        classname = key[0]
+        term = key[1]
+        N_values = term_map[key]
+        if classname not in mutual_information:
+            mutual_information[classname] = [(term, calc_mutual_information(N_values))]
+        else:
+            mutual_information[classname].append(
+                (term, calc_mutual_information(N_values))
+            )
+    # CHI SUQARED
+    mutual_information = {}
+    for key in term_map:
+        classname = key[0]
+        term = key[1]
+        N_values = term_map[key]
+        if classname not in mutual_information:
+            mutual_information[classname] = [(term, calc_mutual_information(N_values))]
+        else:
+            mutual_information[classname].append(
+                (term, calc_mutual_information(N_values))
+            )
+    del term_map
+    gc.collect()
+
+    for key in mutual_information:
+        mutual_information[key] = sorted(
+            mutual_information[key], key=lambda x: x[1], reverse=True
+        )[:top_k]
+
+    with open(mutual_information_output_file, "w", newline="") as csvfile:
+        csvwriter = csv.writer(csvfile)
+        for classname in mutual_information:
+            csvwriter.writerow([classname])
+            for term in mutual_information[classname]:
+                csvwriter.writerow([term[0], term[1]])
+
+    # Calculate X^2
+
+    # Run LDA
+
+
+def classify(text_classification_file):
+    raise NotImplementedError
+
+
 if __name__ == "__main__":
     args = get_args()
     match args.module_name.lower():
@@ -208,7 +378,7 @@ if __name__ == "__main__":
                 args.eval_output_file,
             )
         case "analyze":
-            raise NotImplementedError
+            analyze(args.text_analysis_file, args.mutual_information_output_file)
         case "classify":
             raise NotImplementedError
         case _:
