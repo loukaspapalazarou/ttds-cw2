@@ -4,7 +4,7 @@ import pandas as pd
 import re
 from nltk.stem import PorterStemmer
 import numpy as np
-from math import log2
+from math import log2, pow
 import gc
 import csv
 
@@ -61,10 +61,10 @@ def get_args():
     )
 
     parser.add_argument(
-        "--mutual_information_output_file",
+        "--text_analysis_output_file",
         nargs="?",
         type=str,
-        default="mutual_information_output.csv",
+        default="text_analysis.csv",
         help="The output file name of the eval module",
     )
 
@@ -282,8 +282,15 @@ def calc_chi_squred(N_values):
     N01 = N_values[2]
     N00 = N_values[3]
 
+    t1 = sum(N_values) * pow(N11 * N00 - N10 * N01, 2)
+    t2 = (N11 + N01) * (N11 + N10) * (N10 + N00) * (N01 + N00)
+    try:
+        return t1 / t2
+    except Exception:
+        return 0
 
-def analyze(text_analysis_file, mutual_information_output_file):
+
+def analyze(text_analysis_file, text_analysis_output_file):
     corpora = pd.DataFrame(columns=["class", "terms"])
     with open(text_analysis_file, "r") as f:
         lines = f.readlines()
@@ -332,18 +339,16 @@ def analyze(text_analysis_file, mutual_information_output_file):
             mutual_information[classname].append(
                 (term, calc_mutual_information(N_values))
             )
-    # CHI SUQARED
-    mutual_information = {}
+    # Chi Squared
+    chi_squared = {}
     for key in term_map:
         classname = key[0]
         term = key[1]
         N_values = term_map[key]
-        if classname not in mutual_information:
-            mutual_information[classname] = [(term, calc_mutual_information(N_values))]
+        if classname not in chi_squared:
+            chi_squared[classname] = [(term, calc_chi_squred(N_values))]
         else:
-            mutual_information[classname].append(
-                (term, calc_mutual_information(N_values))
-            )
+            chi_squared[classname].append((term, calc_chi_squred(N_values)))
     del term_map
     gc.collect()
 
@@ -352,14 +357,25 @@ def analyze(text_analysis_file, mutual_information_output_file):
             mutual_information[key], key=lambda x: x[1], reverse=True
         )[:top_k]
 
-    with open(mutual_information_output_file, "w", newline="") as csvfile:
+    for key in chi_squared:
+        chi_squared[key] = sorted(chi_squared[key], key=lambda x: x[1], reverse=True)[
+            :top_k
+        ]
+
+    with open(text_analysis_output_file, "w", newline="") as csvfile:
         csvwriter = csv.writer(csvfile)
+        csvwriter.writerow(["Mutual Information"])
         for classname in mutual_information:
             csvwriter.writerow([classname])
             for term in mutual_information[classname]:
                 csvwriter.writerow([term[0], term[1]])
 
-    # Calculate X^2
+        csvwriter.writerow([])
+        csvwriter.writerow(["Chi Squared"])
+        for classname in chi_squared:
+            csvwriter.writerow([classname])
+            for term in chi_squared[classname]:
+                csvwriter.writerow([term[0], term[1]])
 
     # Run LDA
 
@@ -378,7 +394,7 @@ if __name__ == "__main__":
                 args.eval_output_file,
             )
         case "analyze":
-            analyze(args.text_analysis_file, args.mutual_information_output_file)
+            analyze(args.text_analysis_file, args.text_analysis_output_file)
         case "classify":
             raise NotImplementedError
         case _:
