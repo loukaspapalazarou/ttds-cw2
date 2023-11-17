@@ -7,6 +7,8 @@ import numpy as np
 from math import log2, pow
 import gc
 import csv
+import gensim
+from gensim import corpora
 
 STOPWORDS_FILENAME = "ttds_2023_english_stop_words.txt"
 STEMMER = PorterStemmer()
@@ -291,7 +293,7 @@ def calc_chi_squred(N_values):
 
 
 def analyze(text_analysis_file, text_analysis_output_file):
-    corpora = pd.DataFrame(columns=["class", "terms"])
+    corpus_dict = pd.DataFrame(columns=["class", "terms"])
     with open(text_analysis_file, "r") as f:
         lines = f.readlines()
     for line in lines:
@@ -299,18 +301,17 @@ def analyze(text_analysis_file, text_analysis_output_file):
         df_to_concat = pd.DataFrame(
             {"class": [line[0]], "terms": [text_to_terms(line[1])]}
         )
-        corpora = pd.concat([corpora, df_to_concat], ignore_index=True)
+        corpus_dict = pd.concat([corpus_dict, df_to_concat], ignore_index=True)
 
-    # Calculate Mutual Information
     top_k = 10
     term_map = {}
-    for i, i_row in corpora.iterrows():
-        print(f"Processing rows {i+1}/{len(corpora)}")
+    for i, i_row in corpus_dict.iterrows():
+        print(f"Processing rows {i+1}/{len(corpus_dict)}")
         # Accessing the values in each row
         i_class = i_row["class"]
         for term in i_row["terms"]:
             N00, N01, N10, N11 = 0, 0, 0, 0
-            for _, j_row in corpora.iterrows():
+            for _, j_row in corpus_dict.iterrows():
                 if i_class == j_row["class"] and term in j_row["terms"]:
                     N11 += 1
                 elif i_class != j_row["class"] and term in j_row["terms"]:
@@ -327,6 +328,9 @@ def analyze(text_analysis_file, text_analysis_output_file):
                 max(N00, current_value[3]),
             )
             term_map[(i_class, term)] = updated_value
+
+    # TODO: Remove any strings that appear less than 10 times across both corpora
+    # term_map = ...
 
     mutual_information = {}
     for key in term_map:
