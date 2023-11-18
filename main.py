@@ -7,8 +7,8 @@ import numpy as np
 from math import log2, pow
 import gc
 import csv
-import gensim
-from gensim import corpora
+from gensim.models import LdaModel
+from gensim.corpora.dictionary import Dictionary
 
 STOPWORDS_FILENAME = "ttds_2023_english_stop_words.txt"
 STEMMER = PorterStemmer()
@@ -293,25 +293,18 @@ def calc_chi_squred(N_values):
 
 
 def analyze(text_analysis_file, text_analysis_output_file):
-    corpus_dict = pd.DataFrame(columns=["class", "terms"])
-    with open(text_analysis_file, "r") as f:
-        lines = f.readlines()
-    for line in lines:
-        line = line.split("\t")
-        df_to_concat = pd.DataFrame(
-            {"class": [line[0]], "terms": [text_to_terms(line[1])]}
-        )
-        corpus_dict = pd.concat([corpus_dict, df_to_concat], ignore_index=True)
+    corpora_df = pd.read_csv(text_analysis_file, sep="\t", names=["class", "terms"])
+    corpora_df["terms"] = corpora_df["terms"].apply(text_to_terms)
 
     top_k = 10
     term_map = {}
-    for i, i_row in corpus_dict.iterrows():
-        print(f"Processing rows {i+1}/{len(corpus_dict)}")
+    for i, i_row in corpora_df.iterrows():
+        print(f"Processing rows {i+1}/{len(corpora_df)}")
         # Accessing the values in each row
         i_class = i_row["class"]
         for term in i_row["terms"]:
             N00, N01, N10, N11 = 0, 0, 0, 0
-            for _, j_row in corpus_dict.iterrows():
+            for _, j_row in corpora_df.iterrows():
                 if i_class == j_row["class"] and term in j_row["terms"]:
                     N11 += 1
                 elif i_class != j_row["class"] and term in j_row["terms"]:
@@ -328,9 +321,6 @@ def analyze(text_analysis_file, text_analysis_output_file):
                 max(N00, current_value[3]),
             )
             term_map[(i_class, term)] = updated_value
-
-    # TODO: Remove any strings that appear less than 10 times across both corpora
-    # term_map = ...
 
     mutual_information = {}
     for key in term_map:
@@ -382,6 +372,16 @@ def analyze(text_analysis_file, text_analysis_output_file):
                 csvwriter.writerow([term[0], term[1]])
 
     # Run LDA
+    all_docs = corpora_df["terms"].tolist()
+    all_docs_dictionary = Dictionary(all_docs)
+    all_docs_corpus = [all_docs_dictionary.doc2bow(text) for text in all_docs]
+    lda = LdaModel(all_docs_corpus, num_topics=20)
+
+    for i in lda.print_topics():
+        print(i)
+
+    for i in all_docs_dictionary:
+        print(i, all_docs_dictionary[i])
 
 
 def classify(text_classification_file):
