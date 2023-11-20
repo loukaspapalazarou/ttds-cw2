@@ -29,7 +29,11 @@ def get_args():
     """
     parser = argparse.ArgumentParser(description="Welcome to my TTDS coursework 2")
 
-    parser.add_argument("module_name", help="The module you want to run")
+    parser.add_argument(
+        "module_name",
+        type=str,
+        help="The module you want to run. Options available: 'eval', 'analyze', 'classify'",
+    )
 
     parser.add_argument(
         "--system_results_file",
@@ -60,7 +64,7 @@ def get_args():
         nargs="?",
         type=str,
         default="train_and_dev.tsv",
-        help="The output file name of the eval module",
+        help="The input file of the analyze module",
     )
 
     parser.add_argument(
@@ -68,7 +72,7 @@ def get_args():
         nargs="?",
         type=str,
         default="text_analysis.csv",
-        help="The output file name of the eval module",
+        help="The output file of the analyze module",
     )
 
     parser.add_argument(
@@ -76,7 +80,15 @@ def get_args():
         nargs="?",
         type=str,
         default="train.txt",
-        help="The output file name of the eval module",
+        help="The input file of the classify module",
+    )
+
+    parser.add_argument(
+        "--text_classification_output_file",
+        nargs="?",
+        type=str,
+        default="text_classification.csv",
+        help="The output file of the classify module",
     )
 
     args = parser.parse_args()
@@ -293,7 +305,7 @@ def calc_chi_squred(N_values):
         return 0
 
 
-def calculate_tuple_average(input_list):
+def get_highest_probability_topic(input_list):
     # Create a dictionary to store sums and counts for each id
     id_sum_count = {}
 
@@ -307,7 +319,12 @@ def calculate_tuple_average(input_list):
 
     # Create a new list of tuples with id and average value
     result_list = [(id, id_sum_count[id] / len(input_list)) for id in id_sum_count]
-    return sorted(result_list, key=lambda x: x[1], reverse=True)
+    return sorted(result_list, key=lambda x: x[1], reverse=True)[0]
+
+
+def top_topics_str_to_list(s, dict):
+    matches = re.findall(r'"(\d+)"\s*\+\s*([\d.]+)', s)
+    return [(dict[int(num)], float(score)) for num, score in matches]
 
 
 def analyze(text_analysis_file, text_analysis_output_file, top_k=10, num_topics=20):
@@ -315,93 +332,93 @@ def analyze(text_analysis_file, text_analysis_output_file, top_k=10, num_topics=
     corpora_df = pd.read_csv(text_analysis_file, sep="\t", names=["class", "terms"])
     corpora_df["terms"] = corpora_df["terms"].apply(text_to_terms)
 
-    # term_map = {}
-    # for i, i_row in corpora_df.iterrows():
-    #     print(f"Processing rows {i+1}/{len(corpora_df)}")
-    #     i_class = i_row["class"]
+    term_map = {}
+    for i, i_row in corpora_df.iterrows():
+        print(f"Processing rows {i+1}/{len(corpora_df)}")
+        i_class = i_row["class"]
 
-    #     # Create a boolean mask for rows with the same class as i_row
-    #     same_class_mask = corpora_df["class"] == i_class
+        # Create a boolean mask for rows with the same class as i_row
+        same_class_mask = corpora_df["class"] == i_class
 
-    #     for term in i_row["terms"]:
-    #         # Count occurrences for each combination of terms and classes using vectorized operations
-    #         N11 = (
-    #             (same_class_mask) & (corpora_df["terms"].apply(lambda x: term in x))
-    #         ).sum()
-    #         N10 = (
-    #             (~same_class_mask) & (corpora_df["terms"].apply(lambda x: term in x))
-    #         ).sum()
-    #         N01 = (
-    #             (same_class_mask) & (~corpora_df["terms"].apply(lambda x: term in x))
-    #         ).sum()
-    #         N00 = (
-    #             (~same_class_mask) & (~corpora_df["terms"].apply(lambda x: term in x))
-    #         ).sum()
+        for term in i_row["terms"]:
+            # Count occurrences for each combination of terms and classes using vectorized operations
+            N11 = (
+                (same_class_mask) & (corpora_df["terms"].apply(lambda x: term in x))
+            ).sum()
+            N10 = (
+                (~same_class_mask) & (corpora_df["terms"].apply(lambda x: term in x))
+            ).sum()
+            N01 = (
+                (same_class_mask) & (~corpora_df["terms"].apply(lambda x: term in x))
+            ).sum()
+            N00 = (
+                (~same_class_mask) & (~corpora_df["terms"].apply(lambda x: term in x))
+            ).sum()
 
-    #         current_value = term_map.get((i_class, term), (0, 0, 0, 0))
+            current_value = term_map.get((i_class, term), (0, 0, 0, 0))
 
-    #         # Use numpy maximum function for element-wise maximum
-    #         updated_value = (
-    #             max(N11, current_value[0]),
-    #             max(N10, current_value[1]),
-    #             max(N01, current_value[2]),
-    #             max(N00, current_value[3]),
-    #         )
+            # Use numpy maximum function for element-wise maximum
+            updated_value = (
+                max(N11, current_value[0]),
+                max(N10, current_value[1]),
+                max(N01, current_value[2]),
+                max(N00, current_value[3]),
+            )
 
-    #         term_map[(i_class, term)] = updated_value
+            term_map[(i_class, term)] = updated_value
 
-    # mutual_information = {}
-    # for key in term_map:
-    #     classname = key[0]
-    #     term = key[1]
-    #     N_values = term_map[key]
-    #     if classname not in mutual_information:
-    #         mutual_information[classname] = [(term, calc_mutual_information(N_values))]
-    #     else:
-    #         mutual_information[classname].append(
-    #             (term, calc_mutual_information(N_values))
-    #         )
-    # # Chi Squared
-    # chi_squared = {}
-    # for key in term_map:
-    #     classname = key[0]
-    #     term = key[1]
-    #     N_values = term_map[key]
-    #     if classname not in chi_squared:
-    #         chi_squared[classname] = [(term, calc_chi_squred(N_values))]
-    #     else:
-    #         chi_squared[classname].append((term, calc_chi_squred(N_values)))
+    mutual_information = {}
+    for key in term_map:
+        classname = key[0]
+        term = key[1]
+        N_values = term_map[key]
+        if classname not in mutual_information:
+            mutual_information[classname] = [(term, calc_mutual_information(N_values))]
+        else:
+            mutual_information[classname].append(
+                (term, calc_mutual_information(N_values))
+            )
+    # Chi Squared
+    chi_squared = {}
+    for key in term_map:
+        classname = key[0]
+        term = key[1]
+        N_values = term_map[key]
+        if classname not in chi_squared:
+            chi_squared[classname] = [(term, calc_chi_squred(N_values))]
+        else:
+            chi_squared[classname].append((term, calc_chi_squred(N_values)))
 
-    # del term_map
-    # gc.collect()
+    del term_map
+    gc.collect()
 
-    # for key in mutual_information:
-    #     mutual_information[key] = sorted(
-    #         mutual_information[key], key=lambda x: x[1], reverse=True
-    #     )[:top_k]
+    for key in mutual_information:
+        mutual_information[key] = sorted(
+            mutual_information[key], key=lambda x: x[1], reverse=True
+        )[:top_k]
 
-    # for key in chi_squared:
-    #     chi_squared[key] = sorted(chi_squared[key], key=lambda x: x[1], reverse=True)[
-    #         :top_k
-    #     ]
+    for key in chi_squared:
+        chi_squared[key] = sorted(chi_squared[key], key=lambda x: x[1], reverse=True)[
+            :top_k
+        ]
 
-    # with open(text_analysis_output_file, "w", newline="") as csvfile:
-    #     csvwriter = csv.writer(csvfile)
-    #     csvwriter.writerow(["Mutual Information"])
-    #     for classname in mutual_information:
-    #         csvwriter.writerow([classname])
-    #         for term in mutual_information[classname]:
-    #             csvwriter.writerow([term[0], term[1]])
+    with open(text_analysis_output_file, "w", newline="") as csvfile:
+        csvwriter = csv.writer(csvfile)
+        csvwriter.writerow(["Mutual Information"])
+        for classname in mutual_information:
+            csvwriter.writerow([classname])
+            for term in mutual_information[classname]:
+                csvwriter.writerow([term[0], term[1]])
 
-    #     csvwriter.writerow([])
-    #     csvwriter.writerow(["Chi Squared"])
-    #     for classname in chi_squared:
-    #         csvwriter.writerow([classname])
-    #         for term in chi_squared[classname]:
-    #             csvwriter.writerow([term[0], term[1]])
+        csvwriter.writerow([])
+        csvwriter.writerow(["Chi Squared"])
+        for classname in chi_squared:
+            csvwriter.writerow([classname])
+            for term in chi_squared[classname]:
+                csvwriter.writerow([term[0], term[1]])
 
-    # del mutual_information, chi_squared
-    # gc.collect()
+    del mutual_information, chi_squared
+    gc.collect()
 
     # Run LDA
     print("Creating LDA model...")
@@ -420,16 +437,39 @@ def analyze(text_analysis_file, text_analysis_output_file, top_k=10, num_topics=
 
     print("Finding the average probability of each topic per corpus...")
     topics_df = corpora_df.groupby("class").agg({"topics": "sum"}).reset_index()
-    topics_df["average_probabilities"] = topics_df["topics"].apply(
-        calculate_tuple_average
+    topics_df["top_topic_probability"] = topics_df["topics"].apply(
+        get_highest_probability_topic
     )
     topics_df = topics_df.drop("topics", axis=1)
 
-    topics_df.to_csv("topics.csv", index=False)
+    topics_df["topic_token"] = topics_df["top_topic_probability"].apply(
+        lambda x: all_docs_dict[x[0]]
+    )
+
+    topics_df["top_10_tokens"] = topics_df["top_topic_probability"].apply(
+        lambda x: top_topics_str_to_list(lda_model.print_topic(x[0]), all_docs_dict)
+    )
+
+    topics_df.to_csv(
+        text_analysis_output_file.replace(".csv", "_topics.csv"), index=False
+    )
 
 
-def classify(text_classification_file):
-    raise NotImplementedError
+def classify(
+    text_classification_file,
+    text_classification_output_file,
+    random_seed=0,
+    train_fraction=0.8,
+):
+    tweets_df = pd.read_csv(text_classification_file, delimiter="\t")
+    tweets_df = tweets_df.sample(frac=1, random_state=random_seed)
+
+    train_size = int(len(tweets_df) * train_fraction)
+    test_size = len(tweets_df) - train_size
+    tweets_train_df = tweets_df.head(train_size)
+    tweets_test_df = tweets_df.tail(test_size)
+
+    print(tweets_train_df)
 
 
 if __name__ == "__main__":
@@ -444,7 +484,10 @@ if __name__ == "__main__":
         case "analyze":
             analyze(args.text_analysis_file, args.text_analysis_output_file)
         case "classify":
-            raise NotImplementedError
+            classify(
+                args.text_classification_file, args.text_classification_output_file
+            )
         case _:
             print("Module not supported.")
+            exit(-1)
     print("Done")
