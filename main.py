@@ -91,6 +91,14 @@ def get_args():
         help="The output file of the classify module",
     )
 
+    parser.add_argument(
+        "--svm_model_file",
+        nargs="?",
+        type=str,
+        default="text_classification.csv",
+        help="The filename that the SVM model will be saved in and loaded from.",
+    )
+
     args = parser.parse_args()
     return args
 
@@ -460,6 +468,7 @@ def classify(
     text_classification_output_file,
     random_seed=0,
     train_fraction=0.8,
+    svm_model_file="svm_model.joblib",
 ):
     tweets_df = pd.read_csv(text_classification_file, delimiter="\t")
     tweets_df = tweets_df.sample(frac=1, random_state=random_seed)
@@ -485,7 +494,9 @@ if __name__ == "__main__":
             analyze(args.text_analysis_file, args.text_analysis_output_file)
         case "classify":
             classify(
-                args.text_classification_file, args.text_classification_output_file
+                args.text_classification_file,
+                args.text_classification_output_file,
+                args.svm_model_file,
             )
         case _:
             print("Module not supported.")
