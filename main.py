@@ -1,15 +1,21 @@
-import argparse
-import math
-import pandas as pd
-import re
-from nltk.stem import PorterStemmer
-import numpy as np
-from math import log2, pow
+import os
 import gc
 import csv
-from ast import literal_eval
+import re
+from math import log2, pow
+import argparse
+import pickle
+
+import joblib
+import numpy as np
+import pandas as pd
+from nltk.stem import PorterStemmer
 from gensim.models import LdaModel
 from gensim.corpora.dictionary import Dictionary
+from scipy.sparse import dok_matrix
+from sklearn.svm import SVC
+
+pd.options.mode.chained_assignment = None
 
 STOPWORDS_FILENAME = "ttds_2023_english_stop_words.txt"
 STEMMER = PorterStemmer()
@@ -95,7 +101,7 @@ def get_args():
         "--svm_model_file",
         nargs="?",
         type=str,
-        default="text_classification.csv",
+        default="svm_model.joblib",
         help="The filename that the SVM model will be saved in and loaded from.",
     )
 
@@ -201,7 +207,7 @@ def eval(system_results_file, query_relevance_file, eval_output_file, verbose=Fa
                 elif score == 0:
                     dg.append(0)
                 else:
-                    dg.append(score / math.log2(i + 1))
+                    dg.append(score / log2(i + 1))
 
             dcg = [dg[0]]
             for i in range(1, len(dg)):
@@ -215,7 +221,7 @@ def eval(system_results_file, query_relevance_file, eval_output_file, verbose=Fa
                 elif score == 0:
                     idg.append(0)
                 else:
-                    idg.append(score / math.log2(i + 1))
+                    idg.append(score / log2(i + 1))
 
             idcg = [idg[0]]
             for i in range(1, len(idg)):
@@ -463,12 +469,59 @@ def analyze(text_analysis_file, text_analysis_output_file, top_k=10, num_topics=
     )
 
 
+def preprocess_tweet(text):
+    return [
+        word
+        for word in re.split(r"[^a-zA-Z0-9]+", re.sub(r"http\S+", "", text).lower())
+        if len(word) > 0
+    ]
+
+
+def tweets_df_to_model_input(df, term_dict):
+    X = dok_matrix((len(df), len(term_dict)), dtype=np.int32)
+    for i, bow_terms in enumerate(df["bow_terms"]):
+        for term in bow_terms:
+            X[i, term] += 1
+    return X
+
+
+def tweets_df_to_model_output(df):
+    categories = df["sentiment"].unique()
+    categories_dict = {}
+    for i, c in enumerate(categories):
+        categories_dict[c] = i
+    y = df["sentiment"].apply(lambda x: categories_dict[x]).values
+    return y
+
+
+def model_output_to_sentiment(output, dict):
+    sentiments = []
+    for out in output:
+        sentiments.append(list(dict.keys())[list(dict.values()).index(out)])
+    return sentiments
+
+
+def create_single_tweet_model_input(tweet, term_dict):
+    df = {"tweet": [tweet]}
+    df = pd.DataFrame(df)
+    df["tokenized_tweet"] = df["tweet"].apply(preprocess_tweet)
+    df["bow_terms"] = df["tokenized_tweet"].apply(
+        lambda x: [term_dict[term] for term in x if term in term_dict]
+    )
+    X = dok_matrix((len(df), len(term_dict)), dtype=np.int32)
+    for i, bow_terms in enumerate(df["bow_terms"]):
+        for term in bow_terms:
+            X[i, term] += 1
+    return X
+
+
 def classify(
     text_classification_file,
     text_classification_output_file,
+    svm_model_file,
     random_seed=0,
-    train_fraction=0.8,
-    svm_model_file="svm_model.joblib",
+    train_fraction=0.9,
+    load_saved_model=True,
 ):
     tweets_df = pd.read_csv(text_classification_file, delimiter="\t")
     tweets_df = tweets_df.sample(frac=1, random_state=random_seed)
@@ -477,8 +530,63 @@ def classify(
     test_size = len(tweets_df) - train_size
     tweets_train_df = tweets_df.head(train_size)
     tweets_test_df = tweets_df.tail(test_size)
+    tweets_train_df["tokenized_tweet"] = tweets_train_df["tweet"].apply(
+        preprocess_tweet
+    )
+    tweets_test_df["tokenized_tweet"] = tweets_test_df["tweet"].apply(preprocess_tweet)
 
-    print(tweets_train_df)
+    # NON DETERMINISTIC
+    train_terms = set()
+    for tokens in tweets_train_df["tokenized_tweet"].tolist():
+        train_terms.update(tokens)
+    term_dict = {}
+    for i, term in enumerate(train_terms):
+        term_dict[term] = i
+    ###
+
+    ### DO THIS ###
+    if load_saved_model and os.path.isfile(svm_model_file):
+        model = joblib.load(svm_model_file)
+        with open("saved_dictionary.pkl", "wb") as f:
+            pickle.dump(term_dict, f)
+    else:
+        X = tweets_df_to_model_input(tweets_train_df, term_dict)
+        y = tweets_df_to_model_output(tweets_train_df)
+        model = SVC(C=1000)
+        print("Training model...")
+        model.fit(X, y)
+        joblib.dump(model, svm_model_file)
+
+    tweets_train_df["bow_terms"] = tweets_train_df["tokenized_tweet"].apply(
+        lambda x: [term_dict[term] for term in x]
+    )
+
+    tweets_test_df["bow_terms"] = tweets_test_df["tokenized_tweet"].apply(
+        lambda x: [term_dict[term] for term in x if term in term_dict]
+    )
+
+    classes = tweets_df["sentiment"].unique()
+    classes_dict = {}
+    for i, c in enumerate(classes):
+        classes_dict[c] = i
+
+    if load_saved_model and os.path.isfile(svm_model_file):
+        model = joblib.load(svm_model_file)
+    else:
+        X = tweets_df_to_model_input(tweets_train_df, term_dict)
+        y = tweets_df_to_model_output(tweets_train_df)
+        model = SVC(C=1000)
+        print("Training model...")
+        model.fit(X, y)
+        joblib.dump(model, svm_model_file)
+
+    ### TESTING
+    tweet = "love you"
+    X = create_single_tweet_model_input(tweet, term_dict)
+    y_pred = model.predict(X)
+    print(y_pred)
+    s = model_output_to_sentiment(y_pred, classes_dict)
+    print(s)
 
 
 if __name__ == "__main__":
