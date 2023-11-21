@@ -97,16 +97,11 @@ def get_args():
         help="The output file of the classify module",
     )
 
-    parser.add_argument(
-        "--svm_model_file",
-        nargs="?",
-        type=str,
-        default="svm_model.joblib",
-        help="The filename that the SVM model will be saved in and loaded from.",
-    )
-
     args = parser.parse_args()
     return args
+
+
+# 1. IR Evalutation
 
 
 def eval(system_results_file, query_relevance_file, eval_output_file, verbose=False):
@@ -264,6 +259,9 @@ def eval(system_results_file, query_relevance_file, eval_output_file, verbose=Fa
     if verbose:
         pd.set_option("display.max_rows", None)
         print(final_values_df)
+
+
+# 2. Text Analysis
 
 
 def text_to_terms(text):
@@ -469,12 +467,7 @@ def analyze(text_analysis_file, text_analysis_output_file, top_k=10, num_topics=
     )
 
 
-def preprocess_tweet(text):
-    return [
-        word
-        for word in re.split(r"[^a-zA-Z0-9]+", re.sub(r"http\S+", "", text).lower())
-        if len(word) > 0
-    ]
+# 3. Text Classification
 
 
 def tweets_df_to_model_input(df, term_dict):
@@ -515,14 +508,59 @@ def create_single_tweet_model_input(tweet, term_dict):
     return X
 
 
+def preprocess_tweet(text):
+    return [
+        word
+        for word in re.split(r"[^a-zA-Z0-9]+", re.sub(r"http\S+", "", text).lower())
+        if len(word) > 0
+    ]
+
+
+def preprocess_tweet_optimized(text):
+    return [
+        word
+        for word in re.split(r"[^a-zA-Z0-9]+", re.sub(r"http\S+", "", text).lower())
+        if len(word) > 0
+    ]
+
+
+# def evaluate_svm_model(model, dataset_df, term_dict, class_dict):
+#     y_pred = model.predict(tweets_df_to_model_input(dataset_df, term_dict))
+#     y_real = [class_dict[x] for x in dataset_df["sentiment"].tolist()]
+
+#     score = 0
+#     for pred, real, tweet in zip(y_pred, y_real, dataset_df["tweet"].tolist()):
+#         if pred == real:
+#             score += 1
+#     print(f"\nScore: {score}/{len(y_pred)} ({round(score/len(y_pred)*100,2)}%)")
+
+
+def load_svm_model(train_df, used_seed=None, optimize=True):
+    folder = "svm_optimized"
+    svm_model_file = folder + "/svm_model.joblib"
+    term_dict_file = folder + "/term_dict.pkl"
+    class_dict_file = folder + "/class_dict.pkl"
+    seed_file = folder + "/seed.txt"
+
+    if optimize:
+        preprocess_func = preprocess_tweet_optimized
+    else:
+        preprocess_func = preprocess_tweet
+
+
 def classify(
     text_classification_file,
     text_classification_output_file,
-    svm_model_file,
     random_seed=0,
     train_fraction=0.9,
     load_saved_model=True,
 ):
+    folder = "svm"
+    svm_model_file = folder + "/svm_model.joblib"
+    term_dict_file = folder + "/term_dict.pkl"
+    class_dict_file = folder + "/class_dict.pkl"
+    seed_file = folder + "/seed.txt"
+
     tweets_df = pd.read_csv(text_classification_file, delimiter="\t")
     tweets_df = tweets_df.sample(frac=1, random_state=random_seed)
 
@@ -530,32 +568,60 @@ def classify(
     test_size = len(tweets_df) - train_size
     tweets_train_df = tweets_df.head(train_size)
     tweets_test_df = tweets_df.tail(test_size)
+
     tweets_train_df["tokenized_tweet"] = tweets_train_df["tweet"].apply(
         preprocess_tweet
     )
     tweets_test_df["tokenized_tweet"] = tweets_test_df["tweet"].apply(preprocess_tweet)
 
-    # NON DETERMINISTIC
-    train_terms = set()
-    for tokens in tweets_train_df["tokenized_tweet"].tolist():
-        train_terms.update(tokens)
-    term_dict = {}
-    for i, term in enumerate(train_terms):
-        term_dict[term] = i
-    ###
+    # if the current seed is different than the one used
+    # to create the model, then the model is incompatible
+    # with the dataframes
+    try:
+        with open(seed_file, "r") as f:
+            last_seed = int(f.readline())
+    except (FileNotFoundError, ValueError):
+        last_seed = None
 
-    ### DO THIS ###
-    if load_saved_model and os.path.isfile(svm_model_file):
-        model = joblib.load(svm_model_file)
-        with open("saved_dictionary.pkl", "wb") as f:
-            pickle.dump(term_dict, f)
+    load_saved_model = (
+        load_saved_model
+        and os.path.isfile(svm_model_file)
+        and os.path.isfile(term_dict_file)
+        and os.path.isfile(class_dict_file)
+        and random_seed == last_seed
+    )
+
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+    # create/load dict
+    if load_saved_model:
+        with open(term_dict_file, "rb") as f:
+            term_dict = pickle.load(f)
+        with open(class_dict_file, "rb") as f:
+            class_dict = pickle.load(f)
     else:
-        X = tweets_df_to_model_input(tweets_train_df, term_dict)
-        y = tweets_df_to_model_output(tweets_train_df)
-        model = SVC(C=1000)
-        print("Training model...")
-        model.fit(X, y)
-        joblib.dump(model, svm_model_file)
+        print(
+            "Training a new model because one of the following conditions was not met.\n- You chose to train a new model\n- The model file or one of the dictionary files was not found\n- The dataframe shuffle seed is different than the one used for training\n\ntraining..."
+        )
+        train_terms = set()
+        for tokens in tweets_train_df["tokenized_tweet"].tolist():
+            train_terms.update(tokens)
+        term_dict = {}
+        for i, term in enumerate(train_terms):
+            term_dict[term] = i
+
+        classes = tweets_df["sentiment"].unique()
+        class_dict = {}
+        for i, c in enumerate(classes):
+            class_dict[c] = i
+
+        with open(term_dict_file, "wb") as f:
+            pickle.dump(term_dict, f)
+        with open(class_dict_file, "wb") as f:
+            pickle.dump(class_dict, f)
+        with open(seed_file, "w") as f:
+            f.write(str(random_seed))
 
     tweets_train_df["bow_terms"] = tweets_train_df["tokenized_tweet"].apply(
         lambda x: [term_dict[term] for term in x]
@@ -565,28 +631,17 @@ def classify(
         lambda x: [term_dict[term] for term in x if term in term_dict]
     )
 
-    classes = tweets_df["sentiment"].unique()
-    classes_dict = {}
-    for i, c in enumerate(classes):
-        classes_dict[c] = i
-
-    if load_saved_model and os.path.isfile(svm_model_file):
+    if load_saved_model:
         model = joblib.load(svm_model_file)
     else:
         X = tweets_df_to_model_input(tweets_train_df, term_dict)
         y = tweets_df_to_model_output(tweets_train_df)
         model = SVC(C=1000)
-        print("Training model...")
         model.fit(X, y)
         joblib.dump(model, svm_model_file)
 
-    ### TESTING
-    tweet = "love you"
-    X = create_single_tweet_model_input(tweet, term_dict)
-    y_pred = model.predict(X)
-    print(y_pred)
-    s = model_output_to_sentiment(y_pred, classes_dict)
-    print(s)
+    # evaluate_svm_model(model, tweets_test_df, term_dict, class_dict)
+    # evaluate_svm_model(model, tweets_train_df, term_dict, class_dict)
 
 
 if __name__ == "__main__":
@@ -604,9 +659,8 @@ if __name__ == "__main__":
             classify(
                 args.text_classification_file,
                 args.text_classification_output_file,
-                args.svm_model_file,
             )
         case _:
             print("Module not supported.")
             exit(-1)
-    print("Done")
+    print("\nDone")
