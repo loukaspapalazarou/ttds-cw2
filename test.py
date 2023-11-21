@@ -1,32 +1,28 @@
-from sklearn import datasets
-from sklearn.model_selection import train_test_split
-from sklearn.svm import SVC
-from tqdm import tqdm
+import pickle
 
-# Load a sample dataset
-iris = datasets.load_iris()
-X_train, X_test, y_train, y_test = train_test_split(
-    iris.data, iris.target, test_size=0.2, random_state=42
-)
 
-# Create an SVM model
-svm = SVC(kernel="linear")
+def save_function(func, filename):
+    with open(filename, "wb") as file:
+        pickle.dump(func, file)
 
-# Set the number of training iterations (epochs)
-n_epochs = 10000
 
-# Create a tqdm progress bar
-with tqdm(total=n_epochs, desc="Training SVM") as pbar:
-    for epoch in range(n_epochs):
-        # Fit the SVM model for one epoch
-        svm.fit(X_train, y_train)
+def load_function(filename):
+    with open(filename, "rb") as file:
+        func = pickle.load(file)
+    return func
 
-        # Update the progress bar
-        pbar.update(1)
 
-# After training is complete, you can use the trained model for predictions
-y_pred = svm.predict(X_test)
+# Example function to save and load
+def example_function(x):
+    return x * 2
 
-# Evaluate the model
-accuracy = (y_pred == y_test).mean()
-print(f"Accuracy: {accuracy:.2f}")
+
+# Save the function to a file
+save_function(example_function, "example_function.pkl")
+
+# Load the function from the file
+loaded_function = load_function("example_function.pkl")
+
+# Test the loaded function
+result = loaded_function(5)
+print(result)
