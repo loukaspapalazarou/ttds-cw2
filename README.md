@@ -1,2 +1,5 @@
 # 1. RENAME main.py TO code.py
-# 2. Remove any strings that appear less than 10 times across both corpora
+# 2. FIX EVAL MEAN SCORES
+# 3. 2 TAILED T TEST FOR EVAL
+# 4. OUTPUT FILE FOR CLASSIFY
+# 5. REPORT

@@ -5,6 +5,7 @@ import re
 from math import log2, pow
 import argparse
 import pickle
+import emoji
 
 import joblib
 import numpy as np
@@ -17,15 +18,14 @@ from sklearn.svm import SVC
 
 pd.options.mode.chained_assignment = None
 
+URL_REGEX = re.compile(r"http\S+")
+HASHTAG_REGEX = re.compile(r"#\w+")
 STOPWORDS_FILENAME = "ttds_2023_english_stop_words.txt"
 STEMMER = PorterStemmer()
 
-STOPPING_ENABLED = True
 STOPWORDS = []
-
-if STOPPING_ENABLED:
-    with open(file=STOPWORDS_FILENAME, mode="r") as stopwords_file:
-        STOPWORDS = set(stopwords_file.read().splitlines())
+with open(file=STOPWORDS_FILENAME, mode="r") as stopwords_file:
+    STOPWORDS = set(stopwords_file.read().splitlines())
 
 
 def get_args():
@@ -517,14 +517,21 @@ def preprocess_tweet(text):
 
 
 def preprocess_tweet_optimized(text):
-    return [
+    terms = [
         STEMMER.stem(word)
         for word in re.split(r"[^a-zA-Z0-9]+", re.sub(r"http\S+", "", text).lower())
-        if len(word) > 0 and word not in STOPWORDS
+        if len(word) > 0
     ]
+    terms.extend([entry["emoji"] for entry in emoji.emoji_list(text)])
+    if text.__contains__("#"):
+        terms.append("CONTAINS_HASHTAG")
+    if text.__contains__("http"):
+        terms.append("CONTAINS_LINK")
+    terms.append(len(terms))
+    return terms
 
 
-def evaluate_svm_model(model, dataset_df):
+def evaluate_svm_model(model, dataset_df, verbose=False):
     model_dependencies = model[1]
     model = model[0]
 
@@ -544,6 +551,8 @@ def evaluate_svm_model(model, dataset_df):
     for pred, real, tweet in zip(y_pred, y_real, dataset_df["tweet"].tolist()):
         if pred == real:
             score += 1
+        if verbose:
+            print(pred, real, tweet)
     print(f"Score: {score}/{len(y_pred)} ({round(score/len(y_pred)*100,2)}%)")
 
 
@@ -578,7 +587,7 @@ def load_svm_model(folder, shuffle_seed):
 
 
 def create_svm_model(
-    tweets_df, folder, shuffle_seed, optimize=True, train_fraction=0.9
+    tweets_df, folder, shuffle_seed, optimize=True, train_fraction=0.9, C=1000
 ):
     print(f"Training new model - ({folder})...")
     svm_model_file = folder + "/svm_model.joblib"
@@ -631,7 +640,7 @@ def create_svm_model(
 
     X = tweets_df_to_model_input(tweets_train_df, term_dict)
     y = tweets_df_to_model_output(tweets_train_df)
-    model = SVC(C=1000)
+    model = SVC(C=C)
     model.fit(X, y)
     joblib.dump(model, svm_model_file)
 
@@ -674,16 +683,16 @@ def classify(
         )
 
     print("Baseline\n---------")
-    print("Performance on train:")
-    evaluate_svm_model(baseline_model, tweets_train_df)
+    # print("Performance on train:")
+    # evaluate_svm_model(baseline_model, tweets_train_df)
     print("Performance on test:")
     evaluate_svm_model(baseline_model, tweets_test_df)
 
     print()
 
     print("Optimized\n---------")
-    print("Performance on train:")
-    evaluate_svm_model(optimized_model, tweets_train_df)
+    # print("Performance on train:")
+    # evaluate_svm_model(optimized_model, tweets_train_df)
     print("Performance on test:")
     evaluate_svm_model(optimized_model, tweets_test_df)
 
