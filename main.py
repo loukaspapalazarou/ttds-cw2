@@ -6,6 +6,7 @@ from math import log2, pow
 import argparse
 import pickle
 import emoji
+import time
 
 import joblib
 import numpy as np
@@ -15,6 +16,7 @@ from gensim.models import LdaModel
 from gensim.corpora.dictionary import Dictionary
 from scipy.sparse import dok_matrix
 from sklearn.svm import SVC
+from sklearn.metrics import precision_score, recall_score, f1_score
 
 pd.options.mode.chained_assignment = None
 
@@ -93,7 +95,7 @@ def get_args():
         "--text_classification_output_file",
         nargs="?",
         type=str,
-        default="text_classification.csv",
+        default="classify.csv",
         help="The output file of the classify module",
     )
 
@@ -114,7 +116,18 @@ def eval(system_results_file, query_relevance_file, eval_output_file, verbose=Fa
     nDCG_20 = 20
     nDCG_cutoff = max(nDCG_10, nDCG_20)
 
-    final_values = []
+    ir_eval_df = pd.DataFrame(
+        columns=[
+            "system_number",
+            "query_number",
+            "P@10",
+            "R@50",
+            "r-precision",
+            "AP",
+            "nDCG@10",
+            "nDCG@20",
+        ]
+    )
 
     for system_id in system_results["system_number"].unique().tolist():
         for query_id in system_results["query_number"].unique().tolist():
@@ -225,40 +238,66 @@ def eval(system_results_file, query_relevance_file, eval_output_file, verbose=Fa
             ndcg = [dcg[i] / idcg[i] if idcg[i] != 0 else 0 for i in range(nDCG_cutoff)]
 
             # Append precision, recall, R-precision, AP, nDCG at 10, and nDCG at 20 values to the list
-            final_values.append(
+            values = pd.DataFrame(
                 {
-                    "system_number": system_id,
-                    "query_number": query_id,
-                    "P@10": precision,
-                    "R@50": recall,
-                    "r-precision": r_precision,
-                    "AP": average_precision,
-                    "nDCG@10": ndcg[nDCG_10 - 1],
-                    "nDCG@20": ndcg[nDCG_20 - 1],
+                    "system_number": [system_id],
+                    "query_number": [query_id],
+                    "P@10": [precision],
+                    "R@50": [recall],
+                    "r-precision": [r_precision],
+                    "AP": [average_precision],
+                    "nDCG@10": [ndcg[nDCG_10 - 1]],
+                    "nDCG@20": [ndcg[nDCG_20 - 1]],
                 }
             )
+            ir_eval_df = pd.concat([ir_eval_df, values], ignore_index=True)
 
         # Calculate mean values for each statistic after each system_id
-        mean_values = {
-            "system_number": system_id,
-            "query_number": "mean",
-            "P@10": pd.DataFrame(final_values)["P@10"].mean(),
-            "R@50": pd.DataFrame(final_values)["R@50"].mean(),
-            "r-precision": pd.DataFrame(final_values)["r-precision"].mean(),
-            "AP": pd.DataFrame(final_values)["AP"].mean(),
-            "nDCG@10": pd.DataFrame(final_values)["nDCG@10"].mean(),
-            "nDCG@20": pd.DataFrame(final_values)["nDCG@20"].mean(),
-        }
+        mean_values = pd.DataFrame(
+            {
+                "system_number": [system_id],
+                "query_number": ["mean"],
+                "P@10": [
+                    ir_eval_df.loc[
+                        ir_eval_df["system_number"] == system_id, "P@10"
+                    ].mean()
+                ],
+                "R@50": [
+                    ir_eval_df.loc[
+                        ir_eval_df["system_number"] == system_id, "R@50"
+                    ].mean()
+                ],
+                "r-precision": [
+                    ir_eval_df.loc[
+                        ir_eval_df["system_number"] == system_id, "r-precision"
+                    ].mean()
+                ],
+                "AP": [
+                    ir_eval_df.loc[
+                        ir_eval_df["system_number"] == system_id, "AP"
+                    ].mean()
+                ],
+                "nDCG@10": [
+                    ir_eval_df.loc[
+                        ir_eval_df["system_number"] == system_id, "nDCG@10"
+                    ].mean()
+                ],
+                "nDCG@20": [
+                    ir_eval_df.loc[
+                        ir_eval_df["system_number"] == system_id, "nDCG@20"
+                    ].mean()
+                ],
+            }
+        )
 
-        final_values.append(mean_values)
+        ir_eval_df = pd.concat([ir_eval_df, mean_values], ignore_index=True)
 
     # Create a DataFrame from the precision, recall, R-precision, AP, nDCG at 10, and nDCG at 20 values
-    final_values_df = pd.DataFrame(final_values)
-    final_values_df = final_values_df.round(3)
-    final_values_df.to_csv(eval_output_file, index=False)
+    ir_eval_df = ir_eval_df.round(3)
+    ir_eval_df.to_csv(eval_output_file, index=False)
     if verbose:
         pd.set_option("display.max_rows", None)
-        print(final_values_df)
+        print(ir_eval_df)
 
 
 # 2. Text Analysis
@@ -494,6 +533,10 @@ def model_output_to_sentiment(output, dict):
     return sentiments
 
 
+def output_id_to_sentiment(out, dict):
+    return list(dict.keys())[list(dict.values()).index(out)]
+
+
 def create_single_tweet_model_input(tweet, term_dict):
     df = {"tweet": [tweet]}
     df = pd.DataFrame(df)
@@ -531,7 +574,7 @@ def preprocess_tweet_optimized(text):
     return terms
 
 
-def evaluate_svm_model(model, dataset_df, verbose=False):
+def evaluate_model(model, dataset_df, verbose=False):
     model_dependencies = model[1]
     model = model[0]
 
@@ -547,17 +590,33 @@ def evaluate_svm_model(model, dataset_df, verbose=False):
     y_pred = model.predict(tweets_df_to_model_input(dataset_df, term_dict))
     y_real = [class_dict[x] for x in dataset_df["sentiment"].tolist()]
 
-    score = 0
-    for pred, real, tweet in zip(y_pred, y_real, dataset_df["tweet"].tolist()):
-        if pred == real:
-            score += 1
-        if verbose:
-            print(pred, real, tweet)
-    print(f"Score: {score}/{len(y_pred)} ({round(score/len(y_pred)*100,2)}%)")
+    classes = set(y_real) | set(y_pred)
+
+    model_stats = {}
+
+    for cl in classes:
+        # Filter predictions and ground truth for the current class
+        y_pred_cl = [1 if pred == cl else 0 for pred in y_pred]
+        y_real_cl = [1 if real == cl else 0 for real in y_real]
+
+        key = output_id_to_sentiment(cl, class_dict)[:3]
+        model_stats["p-" + key] = [precision_score(y_real_cl, y_pred_cl)]
+        model_stats["r-" + key] = [recall_score(y_real_cl, y_pred_cl)]
+        model_stats["f-" + key] = [f1_score(y_real_cl, y_pred_cl)]
+
+    macro_avg_precision = precision_score(y_real, y_pred, average="macro")
+    macro_avg_recall = recall_score(y_real, y_pred, average="macro")
+    macro_avg_f1 = f1_score(y_real, y_pred, average="macro")
+
+    model_stats["p-macro"] = [macro_avg_precision]
+    model_stats["r-macro"] = [macro_avg_recall]
+    model_stats["f-macro"] = [macro_avg_f1]
+
+    return model_stats
 
 
-def load_svm_model(folder, shuffle_seed):
-    svm_model_file = folder + "/svm_model.joblib"
+def load_model(folder, shuffle_seed):
+    model_file = folder + "/model.joblib"
     term_dict_file = folder + "/term_dict.pkl"
     class_dict_file = folder + "/class_dict.pkl"
     seed_file = folder + "/seed.pkl"
@@ -570,7 +629,7 @@ def load_svm_model(folder, shuffle_seed):
             "The dataframe shuffle seed is different than the one used for training"
         )
 
-    model = joblib.load(svm_model_file)
+    model = joblib.load(model_file)
     with open(term_dict_file, "rb") as f:
         term_dict = pickle.load(f)
     with open(class_dict_file, "rb") as f:
@@ -586,15 +645,16 @@ def load_svm_model(folder, shuffle_seed):
     return (model, model_dependencies)
 
 
-def create_svm_model(
+def create_model(
     tweets_df, folder, shuffle_seed, optimize=True, train_fraction=0.9, C=1000
 ):
     print(f"Training new model - ({folder})...")
-    svm_model_file = folder + "/svm_model.joblib"
+    model_file = folder + "/model.joblib"
     term_dict_file = folder + "/term_dict.pkl"
     class_dict_file = folder + "/class_dict.pkl"
     seed_file = folder + "/seed.pkl"
     preproc_func_file = folder + "/preproc_func.pkl"
+    training_time_file = folder + "/time_to_train.txt"
 
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -640,9 +700,15 @@ def create_svm_model(
 
     X = tweets_df_to_model_input(tweets_train_df, term_dict)
     y = tweets_df_to_model_output(tweets_train_df)
+    start = time.time()
     model = SVC(C=C)
     model.fit(X, y)
-    joblib.dump(model, svm_model_file)
+    elapsed = round(time.time() - start, 3)
+    print(f"Time to train: {elapsed}s")
+    joblib.dump(model, model_file)
+
+    with open(training_time_file, "w") as file:
+        file.write(str(elapsed))
 
     model_dependencies = {
         "term_dict": term_dict,
@@ -658,43 +724,55 @@ def classify(
     random_seed=0,
     train_fraction=0.9,
 ):
+    classify_df = pd.DataFrame(
+        columns=[
+            "system",
+            "split",
+            "p-pos",
+            "r-pos",
+            "f-pos",
+            "p-neg",
+            "r-neg",
+            "f-neg",
+            "p-neu",
+            "r-neu",
+            "f-neu",
+            "p-macro",
+            "r-macro",
+            "f-macro",
+        ]
+    )
+
     tweets_df = pd.read_csv(text_classification_file, delimiter="\t")
     tweets_df = tweets_df.sample(frac=1, random_state=random_seed)
 
     train_size = int(len(tweets_df) * train_fraction)
     test_size = len(tweets_df) - train_size
-    tweets_train_df = tweets_df.head(train_size)
-    tweets_test_df = tweets_df.tail(test_size)
 
-    model_name = "svm"
-    if os.path.exists(model_name):
-        baseline_model = load_svm_model(model_name, random_seed)
-    else:
-        baseline_model = create_svm_model(
-            tweets_df, model_name, random_seed, optimize=False
-        )
+    dataset_splits = {
+        "train": tweets_df.head(train_size),
+        "dev": tweets_df.tail(test_size),
+        "test": tweets_df.head(1),
+    }
 
-    model_name = "svm_optim"
-    if os.path.exists(model_name):
-        optimized_model = load_svm_model(model_name, random_seed)
-    else:
-        optimized_model = create_svm_model(
-            tweets_df, model_name, random_seed, optimize=True
-        )
+    systems = ["baseline", "improved"]
 
-    print("Baseline\n---------")
-    # print("Performance on train:")
-    # evaluate_svm_model(baseline_model, tweets_train_df)
-    print("Performance on test:")
-    evaluate_svm_model(baseline_model, tweets_test_df)
+    for system_name in systems:
+        for split in dataset_splits:
+            if os.path.exists(system_name):
+                model = load_model(system_name, random_seed)
+            else:
+                model = create_model(tweets_df, system_name, random_seed, optimize=True)
 
-    print()
+            model_stats = evaluate_model(model, dataset_splits[split])
+            model_stats["system"] = [system_name]
+            model_stats["split"] = [split]
 
-    print("Optimized\n---------")
-    # print("Performance on train:")
-    # evaluate_svm_model(optimized_model, tweets_train_df)
-    print("Performance on test:")
-    evaluate_svm_model(optimized_model, tweets_test_df)
+            model_stats = pd.DataFrame(model_stats).round(3)
+            model_stats.to_csv(system_name + "/model_stats.csv", index=False)
+            classify_df = pd.concat([classify_df, model_stats], ignore_index=True)
+
+    classify_df.to_csv(text_classification_output_file, index=False)
 
 
 if __name__ == "__main__":
