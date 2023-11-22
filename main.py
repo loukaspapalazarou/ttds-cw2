@@ -752,7 +752,7 @@ def classify(
     dataset_splits = {
         "train": tweets_df.head(train_size),
         "dev": tweets_df.tail(test_size),
-        "test": tweets_df.head(1),
+        "test": tweets_df.head(50),  # REPLACE WITH REAL TEST SET
     }
 
     systems = ["baseline", "improved"]
